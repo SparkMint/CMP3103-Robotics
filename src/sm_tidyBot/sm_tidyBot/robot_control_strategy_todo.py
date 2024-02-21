@@ -85,19 +85,16 @@ class ControlStrategy(Node):
             
             #TODO Estimate the desired robot linear and angular velocity
             v = ((self.r/2) * self.wL) + ((self.r/2) * self.wR) 
-            w = ((-self.r/self.wL) * self.wL + (self.r/ self.wL) * self.wR)
+            w = ((-self.r/self.L) * self.wL) + ((self.r/self.L) * self.wR)
             #TODO Estimate robot dynamics, the robot current pose (x_{t}) can be obtained by self.robot_current_pose
             dq = np.array([v * np.cos(self.robot_current_pose[2]),
                           v * np.sin(self.robot_current_pose[2]),
                           w])
             
             self.robot_current_pose += self.Ts*dq
-            self.wrap_to_pi(self.robot_current_pose[2])
+            self.robot_current_pose[2] = self.wrap_to_pi(self.robot_current_pose[2])
             self.send_vel(v, w)
-            #TODO Update the self.robot_current_pose, i.e., x_{t+1} = x_{t} + self.Ts*dq
-            #TODO Normalize the robot orientation [-pi, pi], you may use the self.wrap_to_pi(self.robot_current_pose[2])
-            #TODO Send the control commands to via self.send_vel(v, w)
-
+    
             self.time_utilized  =  self.time_utilized + self.Ts
 
     def set_pose(self, msg):
@@ -112,7 +109,7 @@ class ControlStrategy(Node):
         # on the /cmd_vel (self.control_pub) topic
         twist = Twist();
         twist.linear.x = v;
-        twist.angular.x = w; 
+        twist.angular.z = w; 
 
         self.control_pub.publish(twist)
         pass 
@@ -125,7 +122,7 @@ class ControlStrategy(Node):
 def main(args=None):
     rclpy.init(args=args)
     control_strategy = ControlStrategy(delta_t=0.03)
-    control_strategy.diff_drive_init(1, 2)
+    control_strategy.diff_drive_init(1,2)
     # of the left and right side wheels of the robot
     while rclpy.ok():
         try:
