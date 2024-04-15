@@ -1,38 +1,36 @@
 import rclpy
 from rclpy.node import Node
-
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-
 import numpy as np
-
 from cv_bridge import CvBridge
 import cv2
 from enum import Enum
 
+# The robot has three states that it uses to push the cubes
 class RobotState(Enum):
-    LookForTarget = 1
-    RotateTowardsTarget = 2
-    PushTarget = 3
-    MoveAwayFromWall = 4
+    LookForTarget = 1 # Turn until we find a target, if we find a valid one. Point towards it.
+    PushTarget = 2 # Push the target towards the wall.
+    BackUpFromTarget = 3 # Back away from the target as we have pushed it to the wall Successfully.
 
 class TidyScene(Node):
 
     def __init__(self, sampleRate):
         super().__init__('TidyScene')
 
-        self.targetObject = None
+        self.sampleRate = sampleRate
+
+        # Extra Variables
         self.robotState = RobotState.LookForTarget
+        self.targetObject = None
+        self.cubeSize = .05
+        self.distanceFromTarget = 0
 
         # Twist Variables
         self.angularVelocity = 0
         self.linearVelocity = 0
         self.twist = None
-
-        self.sampleRate = sampleRate
-        self.cubeSize = .05
-        self.distance = 0
 
         # Camera Variables
         self.contours = None
@@ -41,9 +39,6 @@ class TidyScene(Node):
         # Laser Variables
         self.laserData = None
         self.laserAngleDeg = 0
-
-        # Timer Variables
-        # TODO: Implement Me!
 
         # Subscribe to the camera and laser topic.
         self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
@@ -75,7 +70,8 @@ class TidyScene(Node):
         # Find all Contours
         self.contours, hierarchy = cv2.findContours(frameMask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-        # Draw contour(s) (image to draw on, contours, contour number -1 to draw all contours, colour, thickness):
+        # Draw all contours we can see.
+        # TODO: Draw the target we find with a different colour.
         frameContours = cv2.drawContours(frame, self.contours, -1, (255, 255, 0), 20)
 
         # show the cv images
@@ -107,21 +103,20 @@ class TidyScene(Node):
             # Find our target object
             self.findTargetObject()
 
+            # Check if we have a target to turn towards
             if self.targetObject is None:
                 self.angularVelocity = 0.3
             else:
-                self.robotState = RobotState.RotateTowardsTarget
-
-        # Rotate Towards Target State
-        if self.robotState is RobotState.RotateTowardsTarget:
-            self.rotateTowardsTarget()
+                self.rotateTowardsTarget()
+                # If we get here. We want to start rotating towards the target.
+                # When it is lined up, it will automatically switch the robot's state to Pushing
   
         # Push Target State
         if self.robotState is RobotState.PushTarget:
             bamting = True
 
         # Move Away State
-        if self.robotState is RobotState.MoveAwayFromWall:
+        if self.robotState is RobotState.BackUpFromTarget:
             bamting = False
 
         # Publish any inputs provided by the bot.
@@ -153,7 +148,7 @@ class TidyScene(Node):
             self.calculateAngleToTarget(M)
 
             laserToCheck = self.laserData.ranges[int(len(self.laserData.ranges) / 2) - self.laserAngleDeg]
-            objectToWallDistance = laserToCheck - self.distance
+            objectToWallDistance = laserToCheck - self.distanceFromTarget
             print("Object to Wall Distance: ", objectToWallDistance)
 
             # Changes the colour of the target laser in Rviz2. Used for debug purposes.
@@ -172,13 +167,13 @@ class TidyScene(Node):
         print("TargetXPos: ", cx)
 
         # If the object's center is to the left, turn left.
-        if cx < self.cameraData.width / 3:
+        if cx < self.cameraData.width / 2:
             print("Going left")
-            self.angularVelocity = 0.3
+            self.angularVelocity = 0.2
         # If the object's center is to the right, turn right.
-        elif cx >= 2 * self.cameraData.width / 3:
+        elif cx >= 2 * self.cameraData.width / 2:
             print("Going Right")
-            self.angularVelocity = -0.3
+            self.angularVelocity = -0.2
         # The object is within 100px of the camera's center.
         else: 
             self.robotState = RobotState.PushTarget
@@ -197,7 +192,7 @@ class TidyScene(Node):
         # https://www.geeksforgeeks.org/realtime-distance-estimation-using-opencv-python/
         boundingBox = cv2.minAreaRect(contour)
         apparentWidth = boundingBox[1][0]
-        self.distance = (self.cubeSize * self.cameraData.width / apparentWidth)
+        self.distanceFromTarget = (self.cubeSize * self.cameraData.width / apparentWidth)
 
 def main(args = None):
 
