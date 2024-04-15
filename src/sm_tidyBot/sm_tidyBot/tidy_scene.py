@@ -25,6 +25,11 @@ class TidyScene(Node):
         self.targetObject = None
         self.robotState = RobotState.LookForTarget
 
+        # Twist Variables
+        self.angularVelocity = 0
+        self.linearVelocity = 0
+        self.twist = None
+
         self.sampleRate = sampleRate
         self.cubeSize = .05
         self.distance = 0
@@ -44,7 +49,10 @@ class TidyScene(Node):
         self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
         self.create_subscription(LaserScan, "/scan", self.laserScanCallback, sampleRate)
 
-        self.publishLaserscan = self.create_publisher(LaserScan, "/scan", sampleRate)
+        # Create Publishers.
+        self.publishLaserScan = self.create_publisher(LaserScan, "/scan", sampleRate)
+        self.publishTwist = self.create_publisher(Twist, "/cmd_vel", sampleRate)
+
         # Create a timer
         self.timer = self.create_timer(1 / sampleRate, self.onTick)
 
@@ -85,6 +93,11 @@ class TidyScene(Node):
         if self.cameraData is None or self.laserData is None:
             return
         
+        # Refresh Velocities each tick.
+        self.angularVelocity = float(0)
+        self.linearVelocity = float(0)
+
+        print("Robot State: ", self.robotState.name)
 
         # Look For Target State
         if self.robotState is RobotState.LookForTarget:
@@ -92,18 +105,16 @@ class TidyScene(Node):
             self.targetObject = None
 
             # Find our target object
-            self.findTargetObject(self.contours, self.cameraData, self.laserData)
+            self.findTargetObject()
 
-            if not self.targetObject:
-                print("No target found")
-                # TODO: Roam till we find a target.
-                return
+            if self.targetObject is None:
+                self.angularVelocity = 0.3
             else:
                 self.robotState = RobotState.RotateTowardsTarget
 
         # Rotate Towards Target State
         if self.robotState is RobotState.RotateTowardsTarget:
-            self.rotateTowardsTarget(self.cameraData)
+            self.rotateTowardsTarget()
   
         # Push Target State
         if self.robotState is RobotState.PushTarget:
@@ -113,11 +124,17 @@ class TidyScene(Node):
         if self.robotState is RobotState.MoveAwayFromWall:
             bamting = False
 
+        # Publish any inputs provided by the bot.
+        self.twist = Twist()
+        self.twist.angular.z = self.angularVelocity
+        self.twist.linear.x = self.linearVelocity
+        self.publishTwist.publish(self.twist)
 
-    def findTargetObject(self, contours, cameraData, laserData):
+
+    def findTargetObject(self):
         currentContour = 0
         # If we can see a contour, rotate towards it
-        for contour in contours:
+        for contour in self.contours:
             print("Checking validity of contour ", currentContour)
             currentContour += 1
             M = cv2.moments(contour)
@@ -128,13 +145,12 @@ class TidyScene(Node):
             cy = int(M['m01']/M['m00'])
 
             # If the object is higher than our robot. Its probably out of reach. Ignore it.
-            if cy <= cameraData.height / 2:
+            if cy <= self.cameraData.height / 2:
                 print("Object centre too high!")
                 continue
 
-            # TODO: Check if this box is against a wall or not. LIDAR is your best bet.
-            self.calculateDistance(contour, cameraData)
-            self.calculateAngleToTarget(M, cameraData)
+            self.calculateDistance(contour)
+            self.calculateAngleToTarget(M)
 
             laserToCheck = self.laserData.ranges[int(len(self.laserData.ranges) / 2) - self.laserAngleDeg]
             objectToWallDistance = laserToCheck - self.distance
@@ -142,45 +158,46 @@ class TidyScene(Node):
 
             # Changes the colour of the target laser in Rviz2. Used for debug purposes.
             self.laserData.intensities[int(len(self.laserData.ranges) / 2) - self.laserAngleDeg] = 100
-            self.publishLaserscan.publish(self.laserData)
+            self.publishLaserScan.publish(self.laserData)
 
             # If we got here, We want to head to this cube.
-            self.targetObject = M
+            self.targetObject = contour
             #print("Found target Object")
             break
 
-    def calculateAngleToTarget(self, M, cameraData):
+    def rotateTowardsTarget(self):
+        # Get the X position of the contour
+        M = cv2.moments(self.targetObject)
+        cx = int(M['m10']/M['m00'])
+        print("TargetXPos: ", cx)
+
+        # If the object's center is to the left, turn left.
+        if cx < self.cameraData.width / 3:
+            print("Going left")
+            self.angularVelocity = 0.3
+        # If the object's center is to the right, turn right.
+        elif cx >= 2 * self.cameraData.width / 3:
+            print("Going Right")
+            self.angularVelocity = -0.3
+        # The object is within 100px of the camera's center.
+        else: 
+            self.robotState = RobotState.PushTarget
+
+    def calculateAngleToTarget(self, M):
         # Get the X position of the contour
         cx = int(M['m10']/M['m00'])
 
-        deltaX = cx - cameraData.width / 2
-        laserAngleRad = np.arctan2(deltaX, cameraData.width / 2)
+        deltaX = cx - self.cameraData.width / 2
+        laserAngleRad = np.arctan2(deltaX, self.cameraData.width / 2)
         self.laserAngleDeg = int(np.degrees(laserAngleRad))
 
-    def calculateDistance(self, contour, cameraData):
+    def calculateDistance(self, contour):
         # Get the bounding box of this contour.
         # Then get the width of it. We can use this to calculate the distance.
         # https://www.geeksforgeeks.org/realtime-distance-estimation-using-opencv-python/
         boundingBox = cv2.minAreaRect(contour)
         apparentWidth = boundingBox[1][0]
-        self.distance = (self.cubeSize * cameraData.width / apparentWidth)
-
-    def rotateTowardsTarget(self, cameraData):
-        # Get the X position of the contour
-        cx = int(self.targetObject['m10']/self.targetObject['m00'])
-
-        # If the object's center is to the left, turn left.
-        if cx < cameraData.width / 3:
-            #print("I wanna turn left")
-            bamting = False
-        # If the object's center is to the right, turn right.
-        elif cx >= 2 * cameraData.width / 3:
-            #print("I wanna turn right")
-            bamting = False
-        # The object is within 100px of the camera's center.
-        else: 
-            #print("Im looking at my target")
-            bamting = True
+        self.distance = (self.cubeSize * self.cameraData.width / apparentWidth)
 
 def main(args = None):
 
@@ -199,20 +216,6 @@ def main(args = None):
     # Destroy the node once it has finished and Shutdown ROS2.
     tidyScene.destroy_node()
     rclpy.shutdown()
- 
 
 if __name__ == '__main__':
     main()
-
-# ROBOT PLAN
-# 
-# Need robot to find cubes, and push them to any wall.
-# Use LIDAR & Camera Feed to determine if a cube is at the wall or not.
-#
-# 
-#
-#
-#
-#
-#
-#
