@@ -7,6 +7,7 @@ import numpy as np
 from cv_bridge import CvBridge
 import cv2
 from enum import Enum
+import time
 
 # The robot has three states that it uses to push the cubes
 class RobotState(Enum):
@@ -105,19 +106,31 @@ class TidyScene(Node):
 
             # Check if we have a target to turn towards
             if self.targetObject is None:
-                self.angularVelocity = 0.3
+                self.angularVelocity = 0.75
             else:
-                self.rotateTowardsTarget()
+                self.headToTarget()
                 # If we get here. We want to start rotating towards the target.
                 # When it is lined up, it will automatically switch the robot's state to Pushing
   
         # Push Target State
         if self.robotState is RobotState.PushTarget:
-            self.linearVelocity = 0.5
+            self.linearVelocity = 0.2
+            self.angularVelocity = 0.0
+
+            forwardLaserDistance = self.laserData.ranges[int(len(self.laserData.ranges) / 2)]
+
+            if forwardLaserDistance < 0.25:
+                self.robotState = RobotState.BackUpFromTarget
 
         # Move Away State
         if self.robotState is RobotState.BackUpFromTarget:
-            bamting = False
+            self.linearVelocity = -0.5
+            self.angularVelocity = 0.0
+
+            forwardLaserDistance = self.laserData.ranges[int(len(self.laserData.ranges) / 2)]
+
+            if forwardLaserDistance > 0.3:
+                self.robotState = RobotState.LookForTarget
 
         # Publish any inputs provided by the bot.
         self.twist = Twist()
@@ -127,9 +140,12 @@ class TidyScene(Node):
 
     def findTargetObject(self):
         currentContour = 0
+
+        # Sort by area. The biggest (Closest ones) should take priority
+        self.contours = sorted(self.contours, key=cv2.contourArea, reverse=True)
+
         # If we can see a contour, rotate towards it
         for contour in self.contours:
-            print("Checking validity of contour ", currentContour)
             currentContour += 1
             M = cv2.moments(contour)
             if M['m00'] <= 0:
@@ -140,7 +156,6 @@ class TidyScene(Node):
 
             # If the object is higher than our robot. Its probably out of reach. Ignore it.
             if cy <= self.cameraData.height / 2:
-                print("Object centre too high!")
                 continue
 
             self.calculateObjectDistance(contour)
@@ -154,8 +169,8 @@ class TidyScene(Node):
 
             # Check if the distance between the object and the wall is less than the specified
             # amount. If it is. We have already pushed that to the wall. Ignore it!
-            if objectToWallDistance < 0.3:
-                print("Object is already at a wall.", objectToWallDistance)
+            if objectToWallDistance < 0.4:
+                #print("Object is already at a wall.", objectToWallDistance)
                 continue
 
             # Changes the colour of the target laser in RVIZ2. Used for debug purposes.
@@ -167,22 +182,25 @@ class TidyScene(Node):
             #print("Found target Object")
             break
 
-    def rotateTowardsTarget(self):
+    def headToTarget(self):
         # Get the X position of the contour
         M = cv2.moments(self.targetObject)
         cx = int(M['m10']/M['m00'])
-        print("TargetXPos: ", cx)
+
+        if self.distanceFromTarget > 0.5: # Move Towards our target
+            self.linearVelocity = 0.2
+
+        print("Target = ", self.cameraData.width / 2)
+        print("Current = ", cx)
 
         # If the object's center is to the left, turn left.
-        if cx < self.cameraData.width / 2:
-            print("Going left")
+        if cx < self.cameraData.width / 2.1:
             self.angularVelocity = 0.2
         # If the object's center is to the right, turn right.
-        elif cx >= 2 * self.cameraData.width / 2:
-            print("Going Right")
+        elif cx > 2 * self.cameraData.width / 2.1 - 100:
             self.angularVelocity = -0.2
         # The object is in the center of our camera's view. Switch to the push state.
-        else: 
+        elif self.distanceFromTarget <= 0.6: 
             self.robotState = RobotState.PushTarget
 
     def calculateAngleToObject(self, M):
