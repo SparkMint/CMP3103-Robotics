@@ -113,7 +113,7 @@ class TidyScene(Node):
   
         # Push Target State
         if self.robotState is RobotState.PushTarget:
-            bamting = True
+            self.linearVelocity = 0.5
 
         # Move Away State
         if self.robotState is RobotState.BackUpFromTarget:
@@ -124,7 +124,6 @@ class TidyScene(Node):
         self.twist.angular.z = self.angularVelocity
         self.twist.linear.x = self.linearVelocity
         self.publishTwist.publish(self.twist)
-
 
     def findTargetObject(self):
         currentContour = 0
@@ -144,14 +143,22 @@ class TidyScene(Node):
                 print("Object centre too high!")
                 continue
 
-            self.calculateDistance(contour)
-            self.calculateAngleToTarget(M)
+            self.calculateObjectDistance(contour)
+            self.calculateAngleToObject(M)
 
+            # Determine the laser segment we want to get our wall distance reading from.
+            # It should be in the direction of the cube we are targeting.
+            # We can then get a distance between the object and the wall.
             laserToCheck = self.laserData.ranges[int(len(self.laserData.ranges) / 2) - self.laserAngleDeg]
             objectToWallDistance = laserToCheck - self.distanceFromTarget
-            print("Object to Wall Distance: ", objectToWallDistance)
 
-            # Changes the colour of the target laser in Rviz2. Used for debug purposes.
+            # Check if the distance between the object and the wall is less than the specified
+            # amount. If it is. We have already pushed that to the wall. Ignore it!
+            if objectToWallDistance < 0.3:
+                print("Object is already at a wall.", objectToWallDistance)
+                continue
+
+            # Changes the colour of the target laser in RVIZ2. Used for debug purposes.
             self.laserData.intensities[int(len(self.laserData.ranges) / 2) - self.laserAngleDeg] = 100
             self.publishLaserScan.publish(self.laserData)
 
@@ -174,11 +181,11 @@ class TidyScene(Node):
         elif cx >= 2 * self.cameraData.width / 2:
             print("Going Right")
             self.angularVelocity = -0.2
-        # The object is within 100px of the camera's center.
+        # The object is in the center of our camera's view. Switch to the push state.
         else: 
             self.robotState = RobotState.PushTarget
 
-    def calculateAngleToTarget(self, M):
+    def calculateAngleToObject(self, M):
         # Get the X position of the contour
         cx = int(M['m10']/M['m00'])
 
@@ -186,7 +193,7 @@ class TidyScene(Node):
         laserAngleRad = np.arctan2(deltaX, self.cameraData.width / 2)
         self.laserAngleDeg = int(np.degrees(laserAngleRad))
 
-    def calculateDistance(self, contour):
+    def calculateObjectDistance(self, contour):
         # Get the bounding box of this contour.
         # Then get the width of it. We can use this to calculate the distance.
         # https://www.geeksforgeeks.org/realtime-distance-estimation-using-opencv-python/
