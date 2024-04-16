@@ -8,6 +8,7 @@ from cv_bridge import CvBridge
 import cv2
 from enum import Enum
 import time
+import math
 
 # The robot has three states that it uses to push the cubes
 class RobotState(Enum):
@@ -20,33 +21,46 @@ class TidyScene(Node):
     def __init__(self, sampleRate):
         super().__init__('TidyScene')
 
+        # ROBOT SETTINGS
         self.sampleRate = sampleRate
 
-        # Extra Variables
-        self.robotState = RobotState.LookForTarget
+        self.searchAngularVelocity = 0.5 # How fast should the robot spin when looking for a valid object?
 
-        self.targetObjectIndex = 0
-        self.distanceFromTarget = 0
-        self.pushForwardTime = 0
-        self.backUpTime = 0
+        self.approachLinearVelocity = 0.3 # How fast should the robot approach its target?
+        self.approachAngularVelocity = 0.2 # How fast should the robot turn towards its target?
 
-        # Twist Variables
-        self.angularVelocity = 0.0
-        self.linearVelocity = 0.0
-        self.twist = None
+        self.pushBeginDistance = 0.5 # How far should the robot be from the target to begin pushing?
+        self.pushTimeSeconds = 3 # How long the robot should be in the pushing state.
+        self.backUpTimeSeconds = 1.5 # How long the robot should be in the back up state.
+        self.pushEndDistance = 0.25 # If the robot gets this close to the wall, it exits out the push state preemptively.
+        self.pushAndBackUpLinearVelocity = 0.3 # How fast we should push or back up.
+        
+        self.objectToWallCullThreshold = 0.3 # If an object is closes than this to the wall, it is ignored.
+        self.wallDistanceRange = 5 # The range behind the cube that the wall distance check will sample distances from. (Closest distance is chosen)
+    
+        # Laser Variables
+        self.laserData = None
 
         # Camera Variables
         self.contourFrame = None
-        self.depthFrame = None
         self.cameraData = None
+        self.depthFrame = None
 
+        # Robot Runtime Values
+        self.robotState = RobotState.LookForTarget
         self.contours = None
         self.targetContour = None
+        self.targetObjectIndex = 0
         self.targetContourX = 0
         self.targetContourY = 0
+        self.distanceFromTarget = 0
+        self.pushTimeLeft = 0
+        self.backUpTimeLeft = 0
 
-        # Laser Variables
-        self.laserData = None
+        # Twist Variables
+        self.twist = None
+        self.angularVelocity = 0.0
+        self.linearVelocity = 0.0
 
         # Subscribe to the camera and laser topic.
         self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
@@ -54,8 +68,8 @@ class TidyScene(Node):
         self.create_subscription(LaserScan, "/scan", self.laserScanCallback, sampleRate)
 
         # Create Publishers.
-        self.publishLaserScan = self.create_publisher(LaserScan, "/scan", sampleRate)
-        self.publishTwist = self.create_publisher(Twist, "/cmd_vel", sampleRate)
+        self.publishLaserScan = self.create_publisher(LaserScan, "/scan", 1)
+        self.publishTwist = self.create_publisher(Twist, "/cmd_vel", 1)
 
         # Create a timer
         self.timer = self.create_timer(1 / sampleRate, self.onTick)
@@ -159,25 +173,30 @@ class TidyScene(Node):
             distanceFromContour = self.depthFrame[cy][cx]
 
             # Find the angle in degrees using the horizontal center of the
-            # chosen contour, the centre of the camera and the FOV (Seems to be 90 degrees)
-            # https://github.com/IntelRealSense/librealsense/issues/5553
-            laserAngleDeg = int(((cx - self.cameraData.width / 2) / self.cameraData.width / 2) * (90 / 2))
+            # chosen contour and the centre of the camera
+            # https://www.sr-research.com/eye-tracking-blog/background/visual-angle/
+            delta = cx - self.cameraData.width / 2
+            laserAngleRadians = np.arctan2(delta, self.cameraData.width / 2)
+
+            # Must convert to an integer for when you actually choose the index of the laser segment you want
+            laserAngleDegrees = int(np.degrees(laserAngleRadians))
 
             # Determine the laser segment we want to get our wall distance reading from.
             # It should be in the direction of the cube we are targeting.
             # We can then get a distance between the object and the wall.
-            # TODO: Update this to use a small range
-            wallDistance = self.laserData.ranges[int(len(self.laserData.ranges) / 2) - laserAngleDeg]
+            laserCenterSegmentIndex = int(len(self.laserData.ranges) / 2) - laserAngleDegrees
+
+            # Changes the colour of the target laser in RVIZ2. Used for debug purposes.
+            self.laserData.intensities[laserCenterSegmentIndex] = 100
+            self.publishLaserScan.publish(self.laserData)
+
+            wallDistance = self.minRange(self.laserData.ranges[laserCenterSegmentIndex - self.wallDistanceRange: laserCenterSegmentIndex + self.wallDistanceRange])
             objectToWallDistance = wallDistance - distanceFromContour
 
             # Check if the distance between the object and the wall is less than the specified
             # amount. If it is. We have already pushed that to the wall. Ignore it!
-            if objectToWallDistance < 0.:
+            if objectToWallDistance < self.objectToWallCullThreshold:
                 continue
-
-            # Changes the colour of the target laser in RVIZ2. Used for debug purposes.
-            self.laserData.intensities[int(len(self.laserData.ranges) / 2) - laserAngleDeg] = 100
-            self.publishLaserScan.publish(self.laserData)
 
             # If we got here. We have found a valid target. Select this one and return.
             self.targetObjectIndex = cIndex
@@ -185,53 +204,51 @@ class TidyScene(Node):
             self.distanceFromTarget = distanceFromContour
             self.targetContourX = cx
             self.targetContourY = cy
-
-            print("INFO")
-            print("Object Distance = ", self.distanceFromTarget)
-            print("Wall Distance = ", wallDistance)
-            print("Object to Wall Distance = ", objectToWallDistance)
-
             return
         
         self.targetObjectIndex = 999
 
     def lookForTargetBehavior(self):
-        print("Target Dist:", self.distanceFromTarget)
         # Check if we have a target to turn towards
         if self.targetContour is None:     
-            self.angularVelocity = 0.75
+            self.angularVelocity = self.searchAngularVelocity
         else:
-            if self.distanceFromTarget > 0.5: # Move Towards our target
-                self.linearVelocity = 0.2
-
             # If the object's center is to the left, turn left.
             if self.targetContourX < self.cameraData.width / 2.25:
-                self.angularVelocity = 0.2
+                self.angularVelocity = self.approachAngularVelocity
 
             # If the object's center is to the right, turn right.
             elif self.targetContourX > 2 * self.cameraData.width / 2.25:
-                self.angularVelocity = -0.2
-
+                self.angularVelocity = -self.approachAngularVelocity
+            elif self.distanceFromTarget > self.pushBeginDistance: # Move Towards our target
+                self.linearVelocity = self.approachLinearVelocity
             # The object is in the center of our camera's view. Switch to the push state.
-            elif self.distanceFromTarget <= 0.5: 
-                self.pushForwardTime = 3
-                self.backUpTime = 2
+            elif self.distanceFromTarget <= self.pushBeginDistance: 
+                self.pushTimeLeft = self.pushTimeSeconds
+                self.backUpTimeLeft = self.backUpTimeSeconds
                 self.robotState = RobotState.PushTarget
 
     def pushBehavior(self):
-        self.linearVelocity = 0.4
+        self.linearVelocity = self.pushAndBackUpLinearVelocity
 
-        self.pushForwardTime -= 1 / self.sampleRate
+        self.pushTimeLeft -= 1 / self.sampleRate
 
-        if self.pushForwardTime <= 0:   
+        # Check the distance of the forward laser. if we are close to a wall we preemptively switch states
+        # to avoid any collisions.
+        if self.laserData.ranges[int(len(self.laserData.ranges) / 2)] <= self.pushEndDistance:
+            self.pushTimeLeft = 0
+            self.robotState = RobotState.BackUpFromTarget
+            return
+
+        if self.pushTimeLeft <= 0:   
             self.robotState = RobotState.BackUpFromTarget
 
     def backUpBehavior(self):
-        self.linearVelocity = -0.4
+        self.linearVelocity = -self.pushAndBackUpLinearVelocity
 
-        self.backUpTime -= 1 / self.sampleRate
+        self.backUpTimeLeft -= 1 / self.sampleRate
 
-        if self.backUpTime <= 0: 
+        if self.backUpTimeLeft <= 0: 
            self.robotState = RobotState.LookForTarget
 
     def driveRobot(self):
@@ -245,13 +262,20 @@ class TidyScene(Node):
         self.angularVelocity = 0.0
         self.linearVelocity = 0.0
 
+    def minRange(self, range):
+        minRange = math.inf
+        for value in range:
+            if value < minRange:
+                minRange = value
+        return minRange
+
 def main(args = None):
 
     # Initialize ROS2. Must be done before nodes are created.
     rclpy.init(args = args)
 
     # Update 10 times per second.
-    sampleRate = 30
+    sampleRate = 10
 
     # Create Instance of our TidyScene Program.
     tidyScene = TidyScene(sampleRate)
