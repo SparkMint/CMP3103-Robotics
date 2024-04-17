@@ -9,6 +9,7 @@ import cv2
 from enum import Enum
 import time
 import math
+from itertools import filterfalse
 
 # The robot has three states that it uses to push the cubes
 class RobotState(Enum):
@@ -24,18 +25,18 @@ class TidyScene(Node):
         # ROBOT SETTINGS
         self.sampleRate = sampleRate
 
-        self.searchAngularVelocity = 0.5 # How fast should the robot spin when looking for a valid object?
+        self.searchAngularVelocity = 0.75 # How fast should the robot spin when looking for a valid object?
 
-        self.approachLinearVelocity = 0.3 # How fast should the robot approach its target?
-        self.approachAngularVelocity = 0.2 # How fast should the robot turn towards its target?
+        self.approachLinearVelocity = 0.4 # How fast should the robot approach its target?
+        self.approachAngularVelocity = 0.3 # How fast should the robot turn towards its target?
 
-        self.pushBeginDistance = 0.5 # How far should the robot be from the target to begin pushing?
-        self.pushTimeSeconds = 3 # How long the robot should be in the pushing state.
+        self.pushBeginDistance = 0.25 # How far should the robot be from the target to begin pushing?
+        self.pushTimeSeconds = 10 # How long the robot should be in the pushing state.
         self.backUpTimeSeconds = 1.5 # How long the robot should be in the back up state.
         self.pushEndDistance = 0.25 # If the robot gets this close to the wall, it exits out the push state preemptively.
-        self.pushAndBackUpLinearVelocity = 0.3 # How fast we should push or back up.
+        self.pushAndBackUpLinearVelocity = 0.1 # How fast we should push or back up.
         
-        self.objectToWallCullThreshold = 0.3 # If an object is closes than this to the wall, it is ignored.
+        self.objectToWallCullThreshold = 0.4 # If an object is closes than this to the wall, it is ignored.
         self.wallDistanceRange = 5 # The range behind the cube that the wall distance check will sample distances from. (Closest distance is chosen)
     
         # Laser Variables
@@ -63,9 +64,12 @@ class TidyScene(Node):
         self.linearVelocity = 0.0
 
         # Subscribe to the camera and laser topic.
-        self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
-        self.create_subscription(Image, "/limo/depth_camera_link/depth/image_raw", self.depthCallback, sampleRate)
+        self.create_subscription(Image, "/camera/color/image_raw", self.cameraCallback, sampleRate)
+        self.create_subscription(Image, "/camera/depth/image_raw", self.depthCallback, sampleRate)
         self.create_subscription(LaserScan, "/scan", self.laserScanCallback, sampleRate)
+
+        # "/limo/depth_camera_link/image_raw"
+        # "/limo/depth_camera_link/depth/image_raw"
 
         # Create Publishers.
         self.publishLaserScan = self.create_publisher(LaserScan, "/scan", 1)
@@ -88,12 +92,12 @@ class TidyScene(Node):
         # Create mask for range of colours (HSV low values, HSV high values)
         # Find all Contours
         frameHSV = cv2.cvtColor(self.contourFrame, cv2.COLOR_BGR2HSV)
-        frameMask = cv2.inRange(frameHSV,(0, 150, 50), (255, 255, 255))
+        frameMask = cv2.inRange(frameHSV,(30, 25, 25), (80, 255, 255))
         self.contours, hierarchy = cv2.findContours(frameMask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
         # Draw our contours onto the frame and reduce the size
-        if self.targetObjectIndex <= len(self.contours) - 1:      
-            frameContours = cv2.drawContours(self.contourFrame, self.contours, self.targetObjectIndex, (255, 255, 0), 20)
+        if self.targetObjectIndex <= len(self.contours):
+            frameContours = cv2.drawContours(self.contourFrame, self.contours,-1, (255, 255, 0), 20)
             frameContoursSmall = cv2.resize(frameContours, (0,0), fx=0.4, fy=0.4)
             cv2.imshow("Image Window", frameContoursSmall)
         else:
@@ -104,7 +108,7 @@ class TidyScene(Node):
 
     def depthCallback(self, depthData):
         # Convert ROS Image message to an OpenCV Depth frame.
-        self.depthFrame = self.cvBridge.imgmsg_to_cv2(depthData, "32FC1")
+        self.depthFrame = self.cvBridge.imgmsg_to_cv2(depthData, "16UC1")
 
     def laserScanCallback(self, laserData):
         self.laserData = laserData
@@ -113,6 +117,8 @@ class TidyScene(Node):
         # Both data types need to be present to decide what to do.
         if self.cameraData is None or self.laserData is None or self.depthFrame is None:
             return
+        
+        print(self.robotState.name)
         
         # Look for suitable target objects.
         self.selectTargetContour()
@@ -160,7 +166,7 @@ class TidyScene(Node):
             M = cv2.moments(contour)
             if M['m00'] <= 0:
                 continue
-            
+
             # Get the Width and Height of the contour
             cx = int(M['m10']/M['m00'])
             cy = int(M['m01']/M['m00'])
@@ -170,7 +176,7 @@ class TidyScene(Node):
                 continue
 
             # Get the distance to our object as well as the angle required to get to it.
-            distanceFromContour = self.depthFrame[cy][cx]
+            distanceFromContour = self.depthFrame[min(cy, 399)][cx]
 
             # Find the angle in degrees using the horizontal center of the
             # chosen contour and the centre of the camera
@@ -214,11 +220,11 @@ class TidyScene(Node):
             self.angularVelocity = self.searchAngularVelocity
         else:
             # If the object's center is to the left, turn left.
-            if self.targetContourX < self.cameraData.width / 2.25:
+            if self.targetContourX < self.cameraData.width / 3:
                 self.angularVelocity = self.approachAngularVelocity
 
             # If the object's center is to the right, turn right.
-            elif self.targetContourX > 2 * self.cameraData.width / 2.25:
+            elif self.targetContourX > 2 * self.cameraData.width / 3:
                 self.angularVelocity = -self.approachAngularVelocity
             elif self.distanceFromTarget > self.pushBeginDistance: # Move Towards our target
                 self.linearVelocity = self.approachLinearVelocity
