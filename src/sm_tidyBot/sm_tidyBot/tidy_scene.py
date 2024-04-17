@@ -7,9 +7,7 @@ import numpy as np
 from cv_bridge import CvBridge
 import cv2
 from enum import Enum
-import time
 import math
-from itertools import filterfalse
 
 # The robot has three states that it uses to push the cubes
 class RobotState(Enum):
@@ -32,10 +30,10 @@ class TidyScene(Node):
         self.approachAngularVelocity = 0.3 # How fast should the robot turn towards its target?
 
         self.pushBeginDistance = 0.25 # How far should the robot be from the target to begin pushing?
-        self.pushTimeSeconds = 10 # How long the robot should be in the pushing state.
-        self.backUpTimeSeconds = 1.5 # How long the robot should be in the back up state.
+        self.pushTimeSeconds = 3 # How long the robot should be in the pushing state.
+        self.backUpTimeSeconds = 2 # How long the robot should be in the back up state.
         self.pushEndDistance = 0.25 # If the robot gets this close to the wall, it exits out the push state preemptively.
-        self.pushAndBackUpLinearVelocity = 0.1 # How fast we should push or back up.
+        self.pushAndBackUpLinearVelocity = 0.3 # How fast we should push or back up.
         
         self.objectToWallCullThreshold = 0.4 # If an object is closes than this to the wall, it is ignored.
         self.wallDistanceRange = 5 # The range behind the cube that the wall distance check will sample distances from. (Closest distance is chosen)
@@ -102,8 +100,8 @@ class TidyScene(Node):
         self.contours, hierarchy = cv2.findContours(frameMask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
         # Draw our contours onto the frame and reduce the size
-        if self.targetObjectIndex <= len(self.contours):
-            frameContours = cv2.drawContours(self.contourFrame, self.contours,-1, (255, 255, 0), 20)
+        if self.targetObjectIndex <= len(self.contours) - 1:
+            frameContours = cv2.drawContours(self.contourFrame, self.contours, self.targetObjectIndex, (255, 255, 0), 20)
             frameContoursSmall = cv2.resize(frameContours, (0,0), fx=0.4, fy=0.4)
             cv2.imshow("Image Window", frameContoursSmall)
         else:
@@ -137,6 +135,7 @@ class TidyScene(Node):
 
         # Approach Target State
         #
+
         # In this state, we react to the data provided by the target contour selection function found above.
         # If there is a target, we want to head to it and line ourselves up to it. If not, we want to look around
         # so the target contour selection function can run each perceived object through it.
@@ -275,7 +274,7 @@ class TidyScene(Node):
         self.backUpTimeLeft -= 1 / self.sampleRate
 
         if self.backUpTimeLeft <= 0: 
-           self.robotState = RobotState.ApproachTarget
+           self.robotState = RobotState.LookForTarget
 
     def driveRobot(self):
         # Publish any inputs provided by the bot.
