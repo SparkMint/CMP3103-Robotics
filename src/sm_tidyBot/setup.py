@@ -15,13 +15,12 @@ setup(
     zip_safe=True,
     maintainer='lcas',
     maintainer_email='student@socstech.support',
-    description='TODO: Package description',
+    description='Package that allows an agileX limo to detect and push objects in a room',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'talker = sm_tidyBot.publisher_member_function:main',
-            'listener = sm_tidyBot.subscriber_member_function:main',
+            'cleanScene = sm_tidyBot.tidy_scene:main',
         ],
     },
 )

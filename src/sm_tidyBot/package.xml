@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sm_tidyBot</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <version>1.0.0</version>
+  <description>Package that allows an agileX limo to detect and push objects in a room</description>
   <maintainer email="student@socstech.support">lcas</maintainer>
   <license>Apache-2.0</license>
 

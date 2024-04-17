@@ -13,7 +13,8 @@ from itertools import filterfalse
 
 # The robot has three states that it uses to push the cubes
 class RobotState(Enum):
-    LookForTarget = 1 # Turn until we find a target, if we find a valid one. Point towards it.
+    LookForTarget = 0 # Turn until we find a target.
+    ApproachTarget = 1 # Approach our target.
     PushTarget = 2 # Push the target towards the wall.
     BackUpFromTarget = 3 # Back away from the target as we have pushed it to the wall Successfully.
 
@@ -48,7 +49,7 @@ class TidyScene(Node):
         self.depthFrame = None
 
         # Robot Runtime Values
-        self.robotState = RobotState.LookForTarget
+        self.robotState = RobotState.ApproachTarget
         self.contours = None
         self.targetContour = None
         self.targetObjectIndex = 0
@@ -64,12 +65,17 @@ class TidyScene(Node):
         self.linearVelocity = 0.0
 
         # Subscribe to the camera and laser topic.
-        self.create_subscription(Image, "/camera/color/image_raw", self.cameraCallback, sampleRate)
-        self.create_subscription(Image, "/camera/depth/image_raw", self.depthCallback, sampleRate)
+        self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
+        self.create_subscription(Image, "/limo/depth_camera_link/depth/image_raw", self.depthCallback, sampleRate)
         self.create_subscription(LaserScan, "/scan", self.laserScanCallback, sampleRate)
 
-        # "/limo/depth_camera_link/image_raw"
-        # "/limo/depth_camera_link/depth/image_raw"
+        # SIMULATION ROBOT TOPICS
+        #self.create_subscription(Image, "/limo/depth_camera_link/image_raw", self.cameraCallback, sampleRate)
+        #self.create_subscription(Image, "/limo/depth_camera_link/depth/image_raw", self.depthCallback, sampleRate)
+
+        # REAL ROBOT TOPICS
+        #self.create_subscription(Image, "/camera/color/image_raw", self.cameraCallback, sampleRate)
+        #self.create_subscription(Image, "/camera/depth/image_raw", self.depthCallback, sampleRate)
 
         # Create Publishers.
         self.publishLaserScan = self.create_publisher(LaserScan, "/scan", 1)
@@ -108,7 +114,10 @@ class TidyScene(Node):
 
     def depthCallback(self, depthData):
         # Convert ROS Image message to an OpenCV Depth frame.
-        self.depthFrame = self.cvBridge.imgmsg_to_cv2(depthData, "16UC1")
+        self.depthFrame = self.cvBridge.imgmsg_to_cv2(depthData, "32FC1")
+
+    # REAL WORLD DEPTH ENCODING VALUE = "16UC1"
+    # SIMULATION DEPTH ENCODING VALUE = "32FC1"
 
     def laserScanCallback(self, laserData):
         self.laserData = laserData
@@ -123,13 +132,16 @@ class TidyScene(Node):
         # Look for suitable target objects.
         self.selectTargetContour()
 
-        # Look For Target State
+        if self.robotState is RobotState.LookForTarget:
+            self.lookForTarget()
+
+        # Approach Target State
         #
         # In this state, we react to the data provided by the target contour selection function found above.
         # If there is a target, we want to head to it and line ourselves up to it. If not, we want to look around
         # so the target contour selection function can run each perceived object through it.
-        if self.robotState is RobotState.LookForTarget:
-            self.lookForTargetBehavior()
+        if self.robotState is RobotState.ApproachTarget:
+            self.approachTargetBehavior()
   
         # Push Target State
         #        
@@ -167,7 +179,7 @@ class TidyScene(Node):
             if M['m00'] <= 0:
                 continue
 
-            # Get the Width and Height of the contour
+            # Get the Pixel Position of the contour
             cx = int(M['m10']/M['m00'])
             cy = int(M['m01']/M['m00'])
 
@@ -176,7 +188,7 @@ class TidyScene(Node):
                 continue
 
             # Get the distance to our object as well as the angle required to get to it.
-            distanceFromContour = self.depthFrame[min(cy, 399)][cx]
+            distanceFromContour = self.depthFrame[cy][cx]
 
             # Find the angle in degrees using the horizontal center of the
             # chosen contour and the centre of the camera
@@ -214,25 +226,33 @@ class TidyScene(Node):
         
         self.targetObjectIndex = 999
 
-    def lookForTargetBehavior(self):
-        # Check if we have a target to turn towards
-        if self.targetContour is None:     
+    def lookForTarget(self):
+        if self.targetContour is None:   
             self.angularVelocity = self.searchAngularVelocity
         else:
-            # If the object's center is to the left, turn left.
-            if self.targetContourX < self.cameraData.width / 3:
-                self.angularVelocity = self.approachAngularVelocity
+            self.robotState = RobotState.ApproachTarget
 
-            # If the object's center is to the right, turn right.
-            elif self.targetContourX > 2 * self.cameraData.width / 3:
-                self.angularVelocity = -self.approachAngularVelocity
-            elif self.distanceFromTarget > self.pushBeginDistance: # Move Towards our target
-                self.linearVelocity = self.approachLinearVelocity
-            # The object is in the center of our camera's view. Switch to the push state.
-            elif self.distanceFromTarget <= self.pushBeginDistance: 
-                self.pushTimeLeft = self.pushTimeSeconds
-                self.backUpTimeLeft = self.backUpTimeSeconds
-                self.robotState = RobotState.PushTarget
+    def approachTargetBehavior(self):
+
+        # If we have no valid target anymore, return to the looking state.
+        if self.targetContour is None:
+            self.robotState = RobotState.LookForTarget
+            return
+
+        # If the object's center is to the left, turn left.
+        if self.targetContourX < self.cameraData.width / 3:
+            self.angularVelocity = self.approachAngularVelocity
+
+        # If the object's center is to the right, turn right.
+        elif self.targetContourX > 2 * self.cameraData.width / 3:
+            self.angularVelocity = -self.approachAngularVelocity
+        elif self.distanceFromTarget > self.pushBeginDistance: # Move Towards our target
+            self.linearVelocity = self.approachLinearVelocity
+        # The object is in the center of our camera's view. Switch to the push state.
+        elif self.distanceFromTarget <= self.pushBeginDistance: 
+            self.pushTimeLeft = self.pushTimeSeconds
+            self.backUpTimeLeft = self.backUpTimeSeconds
+            self.robotState = RobotState.PushTarget
 
     def pushBehavior(self):
         self.linearVelocity = self.pushAndBackUpLinearVelocity
@@ -255,7 +275,7 @@ class TidyScene(Node):
         self.backUpTimeLeft -= 1 / self.sampleRate
 
         if self.backUpTimeLeft <= 0: 
-           self.robotState = RobotState.LookForTarget
+           self.robotState = RobotState.ApproachTarget
 
     def driveRobot(self):
         # Publish any inputs provided by the bot.
