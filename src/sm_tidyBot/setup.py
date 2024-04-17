@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'cleanScene = sm_tidyBot.tidy_scene:main',
+            'tidy_scene = sm_tidyBot.tidy_scene:main'
         ],
     },
 )

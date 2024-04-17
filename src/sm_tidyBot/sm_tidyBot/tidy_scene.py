@@ -16,10 +16,10 @@ class RobotState(Enum):
     PushTarget = 2 # Push the target towards the wall.
     BackUpFromTarget = 3 # Back away from the target as we have pushed it to the wall Successfully.
 
-class TidyScene(Node):
+class tidy_scene(Node):
 
     def __init__(self, sampleRate):
-        super().__init__('TidyScene')
+        super().__init__('tidy_scene')
 
         # ROBOT SETTINGS
         self.sampleRate = sampleRate
@@ -296,6 +296,7 @@ class TidyScene(Node):
 
 def main(args = None):
 
+    print()
     # Initialize ROS2. Must be done before nodes are created.
     rclpy.init(args = args)
 
@@ -303,7 +304,7 @@ def main(args = None):
     sampleRate = 10
 
     # Create Instance of our TidyScene Program.
-    tidyScene = TidyScene(sampleRate)
+    tidyScene = tidy_scene(sampleRate)
 
     # Executes work on the node until its shut down.
     rclpy.spin(tidyScene)
